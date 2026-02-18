@@ -13,6 +13,16 @@ cv_typical = {
     "omeprazole": 40,
     "warfarin": 45,
     "levothyroxine": 50,
+    "propranolol": 55,  # Высоковариабельный препарат
+    "phenytoin": 30,
+    "digoxin": 25,
+    "theophylline": 20,
+    "carbamazepine": 25,
+    "valproic acid": 18,
+    "lithium": 22,
+    "cyclosporine": 35,
+    "tacrolimus": 30,
+    "sirolimus": 28,
     # ... можно расширять
 }
 

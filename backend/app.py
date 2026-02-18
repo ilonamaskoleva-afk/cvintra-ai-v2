@@ -5,7 +5,8 @@ from config import Config
 import os
 from datetime import datetime
 from cv_database import get_typical_cv
-from utils.synopsis_generator import SynopsisGenerator
+# SynopsisGenerator импортируется только при необходимости
+# from utils.synopsis_generator import SynopsisGenerator
 # Инициализация Flask приложения
 app = Flask(__name__, static_folder='../frontend', static_url_path='')
 CORS(app)
@@ -157,10 +158,14 @@ def full_analysis():
             logger.warning("⚠️ INN not provided")
             return jsonify({"error": "INN is required"}), 400
         
-        # Если CVintra не задан, используем стандартное значение
+        # Определение CVintra: сначала из PubMed, потом из базы, потом дефолт
+        cvintra_source = "user_input"
         if cvintra is None:
-            cvintra = 25.0
-            logger.info(f"ℹ️ CVintra не задан, используется {cvintra}")
+            logger.info(f"ℹ️ CVintra не задан, пытаюсь определить из базы данных...")
+            from cv_database import get_typical_cv
+            cvintra = get_typical_cv(inn)
+            cvintra_source = "database"
+            logger.info(f"ℹ️ CVintra из базы данных: {cvintra}%")
         
         logger.info(f"📋 Строю ответ для {inn}...")
         
@@ -203,18 +208,33 @@ def full_analysis():
         from scrapers.pubmed_scraper import PubMedScraper
         from scrapers.drugbank_scraper import DrugBankScraper
         from scrapers.grls_scraper import GRLSScraper
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError
         
         def fetch_pubmed():
             try:
                 logger.info(f"  → PubMed с API...")
                 pubmed = PubMedScraper()
+                
+                # Проверяем что scraper инициализирован
+                if not hasattr(pubmed, 'api_key'):
+                    logger.warning("  ⚠️ PubMedScraper не инициализирован (возможно, biopython не установлен)")
+                    return {"articles": [], "count": 0, "search_url": f"https://pubmed.ncbi.nlm.nih.gov/?term={inn}", "status": "error", "error": "biopython not installed"}
+                
                 result = pubmed.get_drug_pk_data(inn)
                 logger.info(f"  ✅ PubMed вернул: count={result.get('count')}, articles={len(result.get('articles', []))}")
+                
+                # Логируем PK параметры если найдены
+                if result.get('pk_parameters'):
+                    pk = result['pk_parameters']
+                    if pk.get('cvintra', {}).get('value'):
+                        logger.info(f"  📊 CVintra из PubMed: {pk['cvintra']['value']}%")
+                
                 return result
             except Exception as e:
                 logger.error(f"  ❌ PubMed ошибка: {str(e)}", exc_info=True)
-                return {"articles": [], "count": 0, "search_url": f"https://pubmed.ncbi.nlm.nih.gov/?term={inn}", "status": "error"}
+                import traceback
+                logger.error(f"  Traceback: {traceback.format_exc()}")
+                return {"articles": [], "count": 0, "search_url": f"https://pubmed.ncbi.nlm.nih.gov/?term={inn}", "status": "error", "error": str(e)}
         
         def fetch_drugbank():
             try:
@@ -242,8 +262,26 @@ def full_analysis():
                 future_grls = executor.submit(fetch_grls)
                 
                 try:
-                    results["literature"]["pubmed"] = future_pubmed.result(timeout=20)
-                    logger.info(f"  ✅ PubMed: {results['literature']['pubmed'].get('count', 0)} статей")
+                    pubmed_result = future_pubmed.result(timeout=20)
+                    results["literature"]["pubmed"] = pubmed_result
+                    logger.info(f"  ✅ PubMed: {pubmed_result.get('count', 0)} статей")
+                    
+                    # Если CVintra был из базы данных, пытаемся уточнить из PubMed
+                    if cvintra_source == "database" and pubmed_result.get('pk_parameters'):
+                        pk_params = pubmed_result.get('pk_parameters', {})
+                        if pk_params.get('cvintra', {}).get('value'):
+                            pubmed_cv = pk_params['cvintra']['value']
+                            logger.info(f"  📊 CVintra из PubMed: {pubmed_cv}%")
+                            # Используем PubMed значение если оно разумное
+                            if 5 <= pubmed_cv <= 100:
+                                cvintra = pubmed_cv
+                                cvintra_source = "pubmed"
+                                logger.info(f"  ✅ Использую CVintra из PubMed: {cvintra}%")
+                    
+                    # Сохраняем PK параметры
+                    if pubmed_result.get('pk_parameters'):
+                        results["pk_parameters"] = pubmed_result['pk_parameters']
+                        
                 except TimeoutError:
                     logger.warning(f"  ⏱️ PubMed timeout (20 сек)")
                     results["literature"]["pubmed"] = {"articles": [], "count": 0, "search_url": f"https://pubmed.ncbi.nlm.nih.gov/?term={inn}", "status": "timeout"}
@@ -264,10 +302,16 @@ def full_analysis():
         except Exception as e:
             logger.warning(f"  ⚠️ Ошибка параллельного поиска: {str(e)[:60]}")
         
+        # Пересчитываем дизайн с уточненным CVintra если он изменился
+        if cvintra_source != "user_input":
+            design_rec = SampleSizeCalculator.recommend_design(cvintra)
+            logger.info(f"  🔄 Пересчитан дизайн с CVintra={cvintra}%: {design_rec.get('recommended_design')}")
+        
         results["design_recommendation"] = {
             "recommended_design": design_rec.get("recommended_design"),
             "rationale": design_rec.get("rationale"),
-            "cvintra": cvintra
+            "cvintra": cvintra,
+            "cvintra_source": cvintra_source
         }
         
         results["sample_size"] = {
@@ -322,19 +366,15 @@ def generate_full_synopsis():
         
         logger.info(f"📄 Генерирую синопсис в формате {output_format}...")
         
-        # Генерируем синопсис базовые данные
-        synopsis_data = {
-            "title": "СИНОПСИС ПРОТОКОЛА ИССЛЕДОВАНИЯ БИОЭКВИВАЛЕНТНОСТИ",
-            "inn": data.get('inn', 'N/A'),
-            "dosage_form": data.get('dosage_form', 'N/A'),
-            "dosage": data.get('dosage', 'N/A'),
-            "administration_mode": data.get('administration_mode', 'N/A'),
-            "generated_date": datetime.now().strftime('%d.%m.%Y %H:%M'),
-            "design_recommendation": data.get('design_recommendation', {}),
-            "sample_size": data.get('sample_size', {}),
-            "regulatory_check": data.get('regulatory_check', {}),
-            "literature": data.get('literature', {})
-        }
+        # Генерируем ПОЛНЫЙ синопсис со всеми секциями протокола
+        try:
+            from utils.full_synopsis_generator import generate_full_synopsis_data
+            
+            # Используем данные из запроса как полный анализ
+            synopsis_data = generate_full_synopsis_data(data)
+        except Exception as e:
+            logger.error(f"Ошибка генерации данных синопсиса: {e}", exc_info=True)
+            return jsonify({"error": f"Failed to generate synopsis data: {str(e)}"}), 500
         
         output_path = None
         
@@ -346,68 +386,28 @@ def generate_full_synopsis():
             logger.info(f"  ✅ JSON синопсис сохранен: {output_path}")
             
         elif output_format == 'markdown':
+            from utils.synopsis_formatters import generate_markdown_synopsis
+            
             output_path = os.path.join(Config.OUTPUT_DIR, f"synopsis_{inn}_{timestamp}.md")
-            md_content = _generate_markdown_synopsis(synopsis_data)
+            md_content = generate_markdown_synopsis(synopsis_data)
             with open(output_path, 'w', encoding='utf-8') as f:
                 f.write(md_content)
             logger.info(f"  ✅ Markdown синопсис сохранен: {output_path}")
             
         elif output_format == 'docx':
             try:
-                from docx import Document
-                from docx.shared import Pt
-                from docx.enum.text import WD_ALIGN_PARAGRAPH
+                from utils.synopsis_formatters import generate_docx_synopsis
                 
                 output_path = os.path.join(Config.OUTPUT_DIR, f"synopsis_{inn}_{timestamp}.docx")
-                doc = Document()
-                
-                # Заголовок
-                title = doc.add_heading('СИНОПСИС ПРОТОКОЛА', 0)
-                title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                
-                doc.add_heading('Исследование биоэквивалентности', 1)
-                doc.add_paragraph(f"Препарат: {synopsis_data['inn']}")
-                doc.add_paragraph(f"Форма выпуска: {synopsis_data['dosage_form']}")
-                doc.add_paragraph(f"Дозировка: {synopsis_data['dosage']}")
-                doc.add_paragraph(f"Способ введения: {synopsis_data['administration_mode']}")
-                doc.add_paragraph(f"Дата: {synopsis_data['generated_date']}")
-                doc.add_paragraph('')
-                
-                # Дизайн
-                doc.add_heading('1. РЕКОМЕНДУЕМЫЙ ДИЗАЙН', 1)
-                design_data = synopsis_data.get('design_recommendation', {})
-                doc.add_paragraph(f"Дизайн: {design_data.get('recommended_design', 'N/A')}")
-                doc.add_paragraph(f"Обоснование: {design_data.get('rationale', 'N/A')}")
-                doc.add_paragraph('')
-                
-                # Размер выборки
-                doc.add_heading('2. РАЗМЕР ВЫБОРКИ', 1)
-                sample = synopsis_data.get('sample_size', {})
-                doc.add_paragraph(f"CVintra: {sample.get('cvintra', 'N/A')}%")
-                doc.add_paragraph(f"Базовый размер: {sample.get('base_sample_size', 'N/A')}")
-                doc.add_paragraph(f"Итоговый размер: {sample.get('final_sample_size', 'N/A')}")
-                
-                if sample.get('calculation_steps'):
-                    doc.add_paragraph('Расчет:')
-                    for step in sample['calculation_steps']:
-                        doc.add_paragraph(step, style='List Number')
-                
-                doc.add_paragraph('')
-                
-                # Регуляторное соответствие
-                doc.add_heading('3. РЕГУЛЯТОРНОЕ СООТВЕТСТВИЕ', 1)
-                regulatory = synopsis_data.get('regulatory_check', {})
-                for reg_name, reg_data in regulatory.items():
-                    status = '✓ Соответствует' if isinstance(reg_data, dict) and reg_data.get('compliant') else '✗ Не проверено'
-                    doc.add_paragraph(f"{reg_name}: {status}")
-                
-                doc.save(output_path)
+                generate_docx_synopsis(synopsis_data, output_path)
                 logger.info(f"  ✅ DOCX синопсис сохранен: {output_path}")
                 
             except ImportError:
+                from utils.synopsis_formatters import generate_markdown_synopsis
+                
                 logger.warning("  ⚠️ python-docx не установлен, используем markdown вместо docx")
                 output_path = os.path.join(Config.OUTPUT_DIR, f"synopsis_{inn}_{timestamp}.md")
-                md_content = _generate_markdown_synopsis(synopsis_data)
+                md_content = generate_markdown_synopsis(synopsis_data)
                 with open(output_path, 'w', encoding='utf-8') as f:
                     f.write(md_content)
                 output_format = 'markdown'
@@ -422,9 +422,15 @@ def generate_full_synopsis():
         else:
             return jsonify({"error": "Failed to generate synopsis file"}), 500
         
+    except ImportError as e:
+        logger.error(f"Synopsis generation import error: {e}", exc_info=True)
+        return jsonify({"error": f"Missing dependency: {str(e)}. Install: py -m pip install python-docx"}), 500
     except Exception as e:
         logger.error(f"Synopsis generation error: {e}", exc_info=True)
-        return jsonify({"error": f"Synopsis generation error: {str(e)[:100]}"}), 500
+        import traceback
+        error_details = traceback.format_exc()
+        logger.error(f"Full traceback:\n{error_details}")
+        return jsonify({"error": f"Synopsis generation error: {str(e)}"}), 500
 
 
 def _generate_markdown_synopsis(data: dict) -> str:

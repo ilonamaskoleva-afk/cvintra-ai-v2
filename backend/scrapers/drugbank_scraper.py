@@ -47,7 +47,12 @@ class DrugBankScraper:
         drug_url = self.search_drug(inn)
         
         if not drug_url:
-            return {"error": "Drug not found"}
+            return {
+                "name": inn,
+                "search_url": f"https://go.drugbank.com/drugs/search?q={inn}",
+                "message": f"Поиск данных о {inn} на DrugBank",
+                "status": "not_found"
+            }
         
         try:
             response = requests.get(drug_url, headers=self.headers, timeout=10)
@@ -59,6 +64,8 @@ class DrugBankScraper:
             drug_info = {
                 "name": inn,
                 "url": drug_url,
+                "search_url": f"https://go.drugbank.com/drugs/search?q={inn}",
+                "message": f"Данные о {inn} найдены на DrugBank",
                 "description": "",
                 "pharmacokinetics": "",
                 "half_life": "",
@@ -81,4 +88,10 @@ class DrugBankScraper:
             
         except Exception as e:
             logger.error(f"Ошибка получения информации: {e}")
-            return {"error": str(e)}
+            return {
+                "name": inn,
+                "search_url": f"https://go.drugbank.com/drugs/search?q={inn}",
+                "message": f"Ошибка при получении данных о {inn}",
+                "status": "error",
+                "error": str(e)
+            }

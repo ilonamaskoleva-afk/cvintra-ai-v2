@@ -1,4 +1,11 @@
-const API_BASE_URL = 'http://127.0.0.1:5000/api';
+const API_BASE_URL = (() => {
+    // Если фронтенд отдается самим Flask, используем тот же origin (хост:порт)
+    if (window.location && window.location.origin && window.location.origin !== 'null') {
+        return `${window.location.origin}/api`;
+    }
+    // Если страницу открыли как файл (file://), используем дефолтный адрес бэкенда
+    return 'http://127.0.0.1:8000/api';
+})();
 
 // DOM элементы
 const studyForm = document.getElementById('studyForm');
@@ -74,6 +81,9 @@ searchBtn.addEventListener('click', async () => {
         const result = await response.json();
         console.log('Результаты:', result);
         
+        // Сохраняем результат для использования при генерации синопсиса
+        window.lastAnalysisResult = result;
+        
         hideLoading();
         showResults();
         
@@ -85,8 +95,15 @@ searchBtn.addEventListener('click', async () => {
         displayRegulatoryResults(result);
         
         // Показываем кнопку скачивания
-        document.getElementById('downloadSection').style.display = 'block';
-        document.getElementById('downloadBtn').onclick = () => downloadSynopsis(result);
+        const downloadSection = document.getElementById('downloadSection');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        if (downloadSection && downloadBtn) {
+            downloadSection.style.display = 'block';
+            downloadBtn.onclick = () => downloadSynopsis(result);
+        } else {
+            console.warn('Download section or button not found in DOM');
+        }
         
     } catch (err) {
         hideLoading();
@@ -154,16 +171,38 @@ function displayLiteratureResults(result) {
 function displayPKParameters(result) {
     const pkContent = document.getElementById('pkContent');
     
-    let html = `
-        <p><strong>Источники данных:</strong></p>
-        <ul>
-            <li>PubMed - научные публикации и клинические исследования</li>
-            <li>DrugBank - фармакокинетические параметры</li>
-            <li>ГРЛС - регистрация препарата в РФ</li>
-        </ul>
-        <p style="color: #888; font-size: 0.9em;">
-            💡 Данные обновляются из открытых источников в реальном времени.
-            Для полного подробного анализа рекомендуется ручная проверка найденных статей.
+    const pkParams = result.pk_parameters || {};
+    
+    let html = '<h4>📊 Фармакокинетические параметры</h4>';
+    
+    if (pkParams.cmax || pkParams.auc || pkParams.tmax || pkParams.t_half || pkParams.cvintra) {
+        html += '<table style="width: 100%; border-collapse: collapse; margin: 10px 0;">';
+        html += '<tr style="background-color: #f5f5f5;"><th style="padding: 8px; text-align: left;">Параметр</th><th style="padding: 8px; text-align: left;">Значение</th><th style="padding: 8px; text-align: left;">Единица</th></tr>';
+        
+        if (pkParams.cmax && pkParams.cmax.value) {
+            html += `<tr><td style="padding: 8px;"><strong>Cmax</strong></td><td style="padding: 8px;">${pkParams.cmax.value}</td><td style="padding: 8px;">${pkParams.cmax.unit || 'N/A'}</td></tr>`;
+        }
+        if (pkParams.auc && pkParams.auc.value) {
+            html += `<tr><td style="padding: 8px;"><strong>AUC</strong></td><td style="padding: 8px;">${pkParams.auc.value}</td><td style="padding: 8px;">${pkParams.auc.unit || 'N/A'}</td></tr>`;
+        }
+        if (pkParams.tmax && pkParams.tmax.value) {
+            html += `<tr><td style="padding: 8px;"><strong>Tmax</strong></td><td style="padding: 8px;">${pkParams.tmax.value}</td><td style="padding: 8px;">${pkParams.tmax.unit || 'N/A'}</td></tr>`;
+        }
+        if (pkParams.t_half && pkParams.t_half.value) {
+            html += `<tr><td style="padding: 8px;"><strong>T½</strong></td><td style="padding: 8px;">${pkParams.t_half.value}</td><td style="padding: 8px;">${pkParams.t_half.unit || 'N/A'}</td></tr>`;
+        }
+        if (pkParams.cvintra && pkParams.cvintra.value) {
+            html += `<tr style="background-color: #fff9e6;"><td style="padding: 8px;"><strong>CVintra</strong></td><td style="padding: 8px;">${pkParams.cvintra.value}</td><td style="padding: 8px;">${pkParams.cvintra.unit || '%'}</td></tr>`;
+        }
+        
+        html += '</table>';
+    } else {
+        html += '<p>ℹ️ PK параметры не найдены в литературе. Используются значения по умолчанию.</p>';
+    }
+    
+    html += `
+        <p style="color: #888; font-size: 0.9em; margin-top: 10px;">
+            💡 Данные извлечены из PubMed статей. Для точных значений рекомендуется проверка оригинальных публикаций.
         </p>
     `;
     
@@ -275,17 +314,31 @@ function displayRegulatoryResults(result) {
 studyForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     
-    const formData = {
-        inn: document.getElementById('inn').value,
-        dosage_form: document.getElementById('dosageForm').value,
-        dosage: document.getElementById('dosage').value,
-        administration_mode: document.getElementById('administrationMode').value,
-        output_format: document.getElementById('outputFormat').value
-    };
+    // Если есть результаты анализа, используем их для генерации полного синопсиса
+    const resultsSection = document.getElementById('results');
+    const hasResults = resultsSection && resultsSection.style.display !== 'none';
     
-    const cvintra = document.getElementById('cvintra').value;
-    if (cvintra) {
-        formData.cvintra = parseFloat(cvintra);
+    let formData;
+    if (hasResults && window.lastAnalysisResult) {
+        // Используем данные из последнего анализа для полного синопсиса
+        formData = {
+            ...window.lastAnalysisResult,
+            output_format: document.getElementById('outputFormat').value
+        };
+    } else {
+        // Если анализа еще не было, делаем только базовый запрос
+        formData = {
+            inn: document.getElementById('inn').value,
+            dosage_form: document.getElementById('dosageForm').value,
+            dosage: document.getElementById('dosage').value,
+            administration_mode: document.getElementById('administrationMode').value,
+            output_format: document.getElementById('outputFormat').value
+        };
+        
+        const cvintra = document.getElementById('cvintra').value;
+        if (cvintra) {
+            formData.cvintra = parseFloat(cvintra);
+        }
     }
     
     showLoading();
@@ -331,6 +384,7 @@ studyForm.addEventListener('submit', async (e) => {
 function downloadSynopsis(result) {
     const format = document.getElementById('outputFormat').value;
     
+    // Отправляем ВСЕ данные из анализа для генерации полного синопсиса
     const data = {
         inn: result.inn,
         dosage_form: result.dosage_form,
@@ -340,6 +394,7 @@ function downloadSynopsis(result) {
         design_recommendation: result.design_recommendation,
         sample_size: result.sample_size,
         regulatory_check: result.regulatory_check,
+        pk_parameters: result.pk_parameters || {},
         output_format: format
     };
     
@@ -350,7 +405,17 @@ function downloadSynopsis(result) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
     })
-    .then(response => response.blob())
+    .then(response => {
+        if (!response.ok) {
+            // Пытаемся получить JSON ошибку
+            return response.json().then(errData => {
+                throw new Error(errData.error || `HTTP error! status: ${response.status}`);
+            }).catch(() => {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            });
+        }
+        return response.blob();
+    })
     .then(blob => {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -361,9 +426,21 @@ function downloadSynopsis(result) {
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
         hideLoading();
+        
+        // Показываем успешное сообщение
+        const downloadSection = document.getElementById('downloadSection');
+        if (downloadSection) {
+            downloadSection.innerHTML = `
+                <div class="result-card" style="border-left-color: #28a745; background-color: #f0fff0;">
+                    <h3>✅ Синопсис успешно сгенерирован!</h3>
+                    <p>Файл отправлен на скачивание. Проверьте папку "Загрузки".</p>
+                </div>
+            `;
+        }
     })
     .catch(err => {
         hideLoading();
+        console.error('Ошибка скачивания:', err);
         showError(`Ошибка скачивания: ${err.message}`);
     });
 }

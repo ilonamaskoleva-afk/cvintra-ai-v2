@@ -72,5 +72,8 @@ class GRLSScraper:
         return {
             "inn": inn,
             "registered_drugs": drugs,
+            "count": len(drugs),
+            "search_url": "https://grls.rosminzdrav.ru/",
+            "message": f"Найдено {len(drugs)} препаратов в ГРЛС для {inn}",
             "be_studies": []  # В ГРЛС обычно нет публичных данных BE исследований
         }
