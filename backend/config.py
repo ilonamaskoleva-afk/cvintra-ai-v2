@@ -30,15 +30,20 @@ class Config:
     CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 200))
     TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", 5))
     
+    # API KEYS для внешних сервисов
+    NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")  # PubMed
+    NCBI_EMAIL = os.getenv("NCBI_EMAIL", "your.email@example.com")
+    DRUGBANK_API_KEY = os.getenv("DRUGBANK_API_KEY", "")  # DrugBank (опционально)
+    
     # Scraping settings
-    REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", 30))
+    REQUEST_TIMEOUT = 30
     USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    PUBMED_EMAIL = os.getenv("PUBMED_EMAIL", "your.email@example.com")
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2  # секунд
     
     # Output settings
     OUTPUT_DIR = "outputs"
     SUPPORTED_FORMATS = ["docx", "json", "markdown"]
     
     # Performance
-    USE_GPU = torch.cuda.is_available() if 'torch' in dir() else False
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 3))
