@@ -1,458 +1,446 @@
+// ============================================================
+// КОНФИГУРАЦИЯ API
+// ============================================================
 const API_BASE_URL = (() => {
-    // Если фронтенд отдается самим Flask, используем тот же origin (хост:порт)
     if (window.location && window.location.origin && window.location.origin !== 'null') {
         return `${window.location.origin}/api`;
     }
-    // Если страницу открыли как файл (file://), используем дефолтный адрес бэкенда
     return 'http://127.0.0.1:8000/api';
 })();
 
-// DOM элементы
-const studyForm = document.getElementById('studyForm');
-const searchBtn = document.getElementById('searchBtn');
-const generateBtn = document.getElementById('generateBtn');
-const loading = document.getElementById('loading');
-const results = document.getElementById('results');
-const error = document.getElementById('error');
+console.log('API Base URL:', API_BASE_URL);
 
-// Функция для показа/скрытия элементов
-function showElement(element) {
-    element.style.display = 'block';
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ DOM
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+    initializeNavigation();
+    initializeFormHandlers();
+    initializeEventListeners();
+    checkAPIHealth();
+});
+
+// ============================================================
+// НАВИГАЦИЯ И UI
+// ============================================================
+function initializeNavigation() {
+    const hamburger = document.querySelector('.hamburger');
+    const navMenu = document.querySelector('.nav-menu');
+
+    if (hamburger && navMenu) {
+        hamburger.addEventListener('click', () => {
+            navMenu.classList.toggle('active');
+        });
+
+        // Закрываем меню при клике на ссылку
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', () => {
+                navMenu.classList.remove('active');
+            });
+        });
+    }
 }
 
-function hideElement(element) {
-    element.style.display = 'none';
+function smoothScroll(elementId) {
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.scrollIntoView({ behavior: 'smooth' });
+    }
 }
 
-function showLoading() {
-    showElement(loading);
-    hideElement(results);
-    hideElement(error);
+// ============================================================
+// ОБРАБОТЧИКИ ФОРМ
+// ============================================================
+function initializeFormHandlers() {
+    const studyForm = document.getElementById('studyForm');
+    const confidenceSlider = document.getElementById('confidence');
+
+    // Обновление отображения значения confidence
+    if (confidenceSlider) {
+        confidenceSlider.addEventListener('input', (e) => {
+            const valueDisplay = document.querySelector('.confidence-value');
+            if (valueDisplay) {
+                valueDisplay.textContent = e.target.value + '%';
+            }
+        });
+    }
+
+    // Форма отправки - генерация полного синопсиса
+    if (studyForm) {
+        studyForm.addEventListener('submit', (e) => {
+            e.preventDefault();
+            handleGenerateSynopsis();
+        });
+    }
+}
+
+function initializeEventListeners() {
+    // Модальное окно
+    const modal = document.getElementById('modal');
+    const modalClose = document.querySelector('.modal-close');
+
+    if (modalClose) {
+        modalClose.addEventListener('click', () => {
+            if (modal) modal.style.display = 'none';
+        });
+    }
+
+    if (modal) {
+        window.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        });
+    }
+}
+
+// ============================================================
+// УТИЛИТЫ ДЛЯ UI
+// ============================================================
+
+// Enhanced loading with status messages
+function showLoading(title = "Анализ данных в процессе...") {
+    const loading = document.getElementById('loading');
+    const resultsContainer = document.getElementById('results-container');
+    const errorContainer = document.getElementById('error');
+
+    if (loading) {
+        loading.style.display = 'block';
+        // Update title
+        const titleEl = loading.querySelector('.loading-text');
+        if (titleEl) titleEl.textContent = title;
+    }
+    if (resultsContainer) resultsContainer.style.display = 'none';
+    if (errorContainer) errorContainer.style.display = 'none';
+}
+
+function updateLoadingStatus(status) {
+    const loading = document.getElementById('loading');
+    if (loading) {
+        const hintEl = loading.querySelector('.loading-hint');
+        if (hintEl) hintEl.textContent = status;
+    }
 }
 
 function hideLoading() {
-    hideElement(loading);
-}
-
-function showError(message) {
-    error.textContent = message;
-    showElement(error);
-    hideElement(results);
+    const loading = document.getElementById('loading');
+    if (loading) loading.style.display = 'none';
 }
 
 function showResults() {
-    showElement(results);
-    hideElement(error);
+    const resultsContainer = document.getElementById('results-container');
+    const errorContainer = document.getElementById('error');
+
+    if (resultsContainer) resultsContainer.style.display = 'grid';
+    if (errorContainer) errorContainer.style.display = 'none';
+
+    // Плавная прокрутка к результатам
+    setTimeout(() => {
+        const resultsSection = document.getElementById('results');
+        if (resultsSection) {
+            resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, 100);
 }
 
-// ============= ПОИСК ДАННЫХ =============
-searchBtn.addEventListener('click', async () => {
-    const inn = document.getElementById('inn').value;
-    
-    if (!inn) {
+function showError(message) {
+    const errorContainer = document.getElementById('error');
+    const errorMessage = document.getElementById('errorMessage');
+    const resultsContainer = document.getElementById('results-container');
+
+    if (errorMessage) errorMessage.textContent = message;
+    if (errorContainer) errorContainer.style.display = 'block';
+    if (resultsContainer) resultsContainer.style.display = 'none';
+}
+
+function closeError() {
+    const errorContainer = document.getElementById('error');
+    if (errorContainer) errorContainer.style.display = 'none';
+}
+
+// ============================================================
+// ПОЛУЧЕНИЕ ДАННЫХ ФОРМЫ
+// ============================================================
+function getFormData() {
+    return {
+        inn: document.getElementById('inn')?.value || '',
+        dosageForm: document.getElementById('dosageForm')?.value || '',
+        dosage: document.getElementById('dosage')?.value || '',
+        administrationMode: document.getElementById('administrationMode')?.value || '',
+        cvintra: document.getElementById('cvintra')?.value || null,
+        confidence: parseFloat(document.getElementById('confidence')?.value || 70),
+        outputFormat: document.getElementById('outputFormat')?.value || 'json'
+    };
+}
+
+// ============================================================
+// ГЕНЕРАЦИЯ ПОЛНОГО СИНОПСИСА (ONE BUTTON TO RULE THEM ALL)
+// ============================================================
+async function handleGenerateSynopsis() {
+    const formData = getFormData();
+
+    if (!formData.inn.trim()) {
         showError('Пожалуйста, введите МНН препарата');
         return;
     }
-    
-    showLoading();
-    
+
+    showLoading('Генерирую полный синопсис...');
+
     try {
-        const formData = {
-            inn: inn,
-            dosage_form: document.getElementById('dosageForm').value,
-            dosage: document.getElementById('dosage').value,
-            administration_mode: document.getElementById('administrationMode').value,
-            cvintra: document.getElementById('cvintra').value ? parseFloat(document.getElementById('cvintra').value) : null
-        };
-        
-        console.log('Отправляю запрос:', formData);
-        
+        // Show status updates sequentially
+        setTimeout(() => updateLoadingStatus('📍 Поиск в локальной БД...'), 500);
+        setTimeout(() => updateLoadingStatus('🌍 Проверка PubMed...'), 2000);
+        setTimeout(() => updateLoadingStatus('🔄 Анализ данных и расчет дизайна...'), 4000);
+
         const response = await fetch(`${API_BASE_URL}/full-analysis`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(formData)
+            body: JSON.stringify({
+                inn: formData.inn,
+                dosage_form: formData.dosageForm,
+                dosage: formData.dosage,
+                administration_mode: formData.administrationMode,
+                cvintra: formData.cvintra || null
+            })
         });
-        
+
         if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || `Ошибка HTTP: ${response.status}`);
         }
-        
+
         const result = await response.json();
-        console.log('Результаты:', result);
-        
-        // Сохраняем результат для использования при генерации синопсиса
         window.lastAnalysisResult = result;
-        
+
         hideLoading();
+        displayCompleteResults(result);
         showResults();
-        
-        // Отображение всех результатов
-        displayLiteratureResults(result);
-        displayPKParameters(result);
-        displayDesignResults(result);
-        displaySampleSizeResults(result);
-        displayRegulatoryResults(result);
-        
-        // Показываем кнопку скачивания
-        const downloadSection = document.getElementById('downloadSection');
-        const downloadBtn = document.getElementById('downloadBtn');
-        
-        if (downloadSection && downloadBtn) {
-            downloadSection.style.display = 'block';
-            downloadBtn.onclick = () => downloadSynopsis(result);
-        } else {
-            console.warn('Download section or button not found in DOM');
-        }
-        
+
     } catch (err) {
         hideLoading();
-        console.error('Ошибка:', err);
-        showError(`Ошибка поиска данных: ${err.message}`);
-    }
-});
-
-// ============= ОТОБРАЖЕНИЕ ЛИТЕРАТУРЫ =============
-function displayLiteratureResults(result) {
-    const literatureContent = document.getElementById('literatureContent');
-    
-    let html = '';
-    
-    // PubMed
-    html += '<h4>📰 PubMed</h4>';
-    const pubmed = result.literature?.pubmed || {};
-    if (pubmed.articles && pubmed.articles.length > 0) {
-        html += '<ul>';
-        pubmed.articles.slice(0, 5).forEach(article => {
-            html += `
-                <li>
-                    <strong>${article.title || 'No title'}</strong><br>
-                    <small>${article.authors ? article.authors.join(', ') : 'Unknown'} (${article.year || 'N/A'})</small><br>
-                    <a href="${article.url || '#'}" target="_blank" style="color: #667eea;">Открыть</a>
-                </li>
-            `;
-        });
-        html += '</ul>';
-    } else {
-        html += '<p>ℹ️ Статей не найдено (проверьте значение МНН)</p>';
-    }
-    
-    // DrugBank
-    html += '<h4>💊 DrugBank</h4>';
-    const drugbank = result.literature?.drugbank || {};
-    if (drugbank.pharmacokinetics) {
-        html += `<p><strong>Препарат:</strong> ${drugbank.name}</p>`;
-        html += `<p><strong>Фармакокинетика:</strong> ${drugbank.pharmacokinetics.substring(0, 400)}...</p>`;
-        html += `<a href="${drugbank.url || '#'}" target="_blank" style="color: #667eea;">Открыть в DrugBank</a>`;
-    } else if (drugbank.name) {
-        html += `<p><strong>${drugbank.name}</strong></p>`;
-    } else {
-        html += '<p>ℹ️ Данных не найдено</p>';
-    }
-    
-    // ГРЛС
-    html += '<h4>🏥 ГРЛС (РФ)</h4>';
-    const grls = result.literature?.grls || {};
-    if (grls.registered_drugs && grls.registered_drugs.length > 0) {
-        html += `<p>✅ Найдено ${grls.registered_drugs.length} зарегистрированных препаратов:</p>`;
-        html += '<ul>';
-        grls.registered_drugs.slice(0, 5).forEach(drug => {
-            html += `<li><strong>${drug.name}</strong> - ${drug.dosage_form} (${drug.manufacturer})</li>`;
-        });
-        html += '</ul>';
-    } else {
-        html += '<p>ℹ️ Препарат не найден в ГРЛС</p>';
-    }
-    
-    literatureContent.innerHTML = html;
-}
-
-// ============= ОТОБРАЖЕНИЕ ФК ПАРАМЕТРОВ =============
-function displayPKParameters(result) {
-    const pkContent = document.getElementById('pkContent');
-    
-    const pkParams = result.pk_parameters || {};
-    
-    let html = '<h4>📊 Фармакокинетические параметры</h4>';
-    
-    if (pkParams.cmax || pkParams.auc || pkParams.tmax || pkParams.t_half || pkParams.cvintra) {
-        html += '<table style="width: 100%; border-collapse: collapse; margin: 10px 0;">';
-        html += '<tr style="background-color: #f5f5f5;"><th style="padding: 8px; text-align: left;">Параметр</th><th style="padding: 8px; text-align: left;">Значение</th><th style="padding: 8px; text-align: left;">Единица</th></tr>';
-        
-        if (pkParams.cmax && pkParams.cmax.value) {
-            html += `<tr><td style="padding: 8px;"><strong>Cmax</strong></td><td style="padding: 8px;">${pkParams.cmax.value}</td><td style="padding: 8px;">${pkParams.cmax.unit || 'N/A'}</td></tr>`;
-        }
-        if (pkParams.auc && pkParams.auc.value) {
-            html += `<tr><td style="padding: 8px;"><strong>AUC</strong></td><td style="padding: 8px;">${pkParams.auc.value}</td><td style="padding: 8px;">${pkParams.auc.unit || 'N/A'}</td></tr>`;
-        }
-        if (pkParams.tmax && pkParams.tmax.value) {
-            html += `<tr><td style="padding: 8px;"><strong>Tmax</strong></td><td style="padding: 8px;">${pkParams.tmax.value}</td><td style="padding: 8px;">${pkParams.tmax.unit || 'N/A'}</td></tr>`;
-        }
-        if (pkParams.t_half && pkParams.t_half.value) {
-            html += `<tr><td style="padding: 8px;"><strong>T½</strong></td><td style="padding: 8px;">${pkParams.t_half.value}</td><td style="padding: 8px;">${pkParams.t_half.unit || 'N/A'}</td></tr>`;
-        }
-        if (pkParams.cvintra && pkParams.cvintra.value) {
-            html += `<tr style="background-color: #fff9e6;"><td style="padding: 8px;"><strong>CVintra</strong></td><td style="padding: 8px;">${pkParams.cvintra.value}</td><td style="padding: 8px;">${pkParams.cvintra.unit || '%'}</td></tr>`;
-        }
-        
-        html += '</table>';
-    } else {
-        html += '<p>ℹ️ PK параметры не найдены в литературе. Используются значения по умолчанию.</p>';
-    }
-    
-    html += `
-        <p style="color: #888; font-size: 0.9em; margin-top: 10px;">
-            💡 Данные извлечены из PubMed статей. Для точных значений рекомендуется проверка оригинальных публикаций.
-        </p>
-    `;
-    
-    pkContent.innerHTML = html;
-}
-
-// ============= ОТОБРАЖЕНИЕ ДИЗАЙНА =============
-function displayDesignResults(result) {
-    const designContent = document.getElementById('designContent');
-    
-    const design = result.design_recommendation || {};
-    let html = `
-        <h4 style="color: #667eea;">${design.recommended_design || 'Недостаточно данных'}</h4>
-        <p><strong>Обоснование:</strong></p>
-        <p>${design.rationale || 'N/A'}</p>
-        <p style="color: #666; font-size: 0.9em;">
-            Дизайн выбран на основе значения CVintra (внутрисубъектная вариабельность).
-        </p>
-    `;
-    
-    designContent.innerHTML = html;
-}
-
-// ============= ОТОБРАЖЕНИЕ РАЗМЕРА ВЫБОРКИ =============
-function displaySampleSizeResults(result) {
-    const sampleSizeContent = document.getElementById('sampleSizeContent');
-    
-    const ss = result.sample_size || {};
-    let html = `
-        <table style="width: 100%; border-collapse: collapse;">
-            <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;"><strong>Параметр</strong></td>
-                <td style="padding: 10px;"><strong>Значение</strong></td>
-            </tr>
-            <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;">Дизайн исследования</td>
-                <td style="padding: 10px;"><strong>${ss.design || 'N/A'}</strong></td>
-            </tr>
-            <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;">CVintra</td>
-                <td style="padding: 10px;"><strong>${ss.cvintra || 'N/A'}%</strong></td>
-            </tr>
-            <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;">Базовый размер (N)</td>
-                <td style="padding: 10px;"><strong>${ss.base_sample_size || 'N/A'}</strong></td>
-            </tr>
-            <tr style="border-bottom: 1px solid #ddd;">
-                <td style="padding: 10px;">Ожидаемый drop-out</td>
-                <td style="padding: 10px;"><strong>${ss.dropout_rate || 'N/A'}%</strong></td>
-            </tr>
-            <tr style="background-color: #f0f4ff;">
-                <td style="padding: 10px; font-weight: bold;">🎯 Итоговый размер выборки</td>
-                <td style="padding: 10px; color: #667eea; font-size: 1.2em; font-weight: bold;">${ss.final_sample_size || 'N/A'} участников</td>
-            </tr>
-        </table>
-        
-        <h5 style="margin-top: 20px;">📊 Пошаговый расчет:</h5>
-        <ol style="line-height: 2;">
-    `;
-    
-    if (ss.calculation_steps && Array.isArray(ss.calculation_steps)) {
-        ss.calculation_steps.forEach(step => {
-            html += `<li style="font-family: monospace; font-size: 0.9em;">${step}</li>`;
-        });
-    }
-    
-    html += '</ol>';
-    
-    sampleSizeContent.innerHTML = html;
-}
-
-// ============= ОТОБРАЖЕНИЕ РЕГУЛЯТОРНЫХ ТРЕБОВАНИЙ =============
-function displayRegulatoryResults(result) {
-    const regulatoryContent = document.getElementById('regulatoryContent');
-    
-    const reg = result.regulatory_check || {};
-    let html = `
-        <h4>Соответствие требованиям</h4>
-        
-        <div style="padding: 10px; margin: 10px 0; border-radius: 5px; background-color: #f0fff0;">
-            <h5>🇷🇺 Решение № 85 (РФ)</h5>
-            <p style="color: ${reg.decision_85?.compliant ? 'green' : 'red'};">
-                ${reg.decision_85?.compliant ? '✅ Соответствует' : '❌ Не соответствует'}
-            </p>
-            <p style="font-size: 0.9em;">${reg.decision_85?.requirements || 'N/A'}</p>
-        </div>
-        
-        <div style="padding: 10px; margin: 10px 0; border-radius: 5px; background-color: #f0f8ff;">
-            <h5>🇪🇺 EMA Guidelines</h5>
-            <p style="color: ${reg.ema?.compliant ? 'green' : 'red'};">
-                ${reg.ema?.compliant ? '✅ Соответствует' : '❌ Не соответствует'}
-            </p>
-            <p style="font-size: 0.9em;">${reg.ema?.requirements || 'N/A'}</p>
-        </div>
-        
-        <div style="padding: 10px; margin: 10px 0; border-radius: 5px; background-color: #fff0f5;">
-            <h5>🇺🇸 FDA Guidance</h5>
-            <p style="color: ${reg.fda?.compliant ? 'green' : 'red'};">
-                ${reg.fda?.compliant ? '✅ Соответствует' : '❌ Не соответствует'}
-            </p>
-            <p style="font-size: 0.9em;">${reg.fda?.requirements || 'N/A'}</p>
-        </div>
-    `;
-    
-    regulatoryContent.innerHTML = html;
-}
-
-// ============= ГЕНЕРАЦИЯ СИНОПСИСА =============
-studyForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    
-    // Если есть результаты анализа, используем их для генерации полного синопсиса
-    const resultsSection = document.getElementById('results');
-    const hasResults = resultsSection && resultsSection.style.display !== 'none';
-    
-    let formData;
-    if (hasResults && window.lastAnalysisResult) {
-        // Используем данные из последнего анализа для полного синопсиса
-        formData = {
-            ...window.lastAnalysisResult,
-            output_format: document.getElementById('outputFormat').value
-        };
-    } else {
-        // Если анализа еще не было, делаем только базовый запрос
-        formData = {
-            inn: document.getElementById('inn').value,
-            dosage_form: document.getElementById('dosageForm').value,
-            dosage: document.getElementById('dosage').value,
-            administration_mode: document.getElementById('administrationMode').value,
-            output_format: document.getElementById('outputFormat').value
-        };
-        
-        const cvintra = document.getElementById('cvintra').value;
-        if (cvintra) {
-            formData.cvintra = parseFloat(cvintra);
-        }
-    }
-    
-    showLoading();
-    
-    try {
-        const response = await fetch(`${API_BASE_URL}/generate-full-synopsis`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(formData)
-        });
-        
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `synopsis_${formData.inn}_${new Date().getTime()}.${formData.output_format}`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-        
-        hideLoading();
-        showResults();
-        
-        document.getElementById('downloadSection').innerHTML = `
-            <div class="result-card" style="border-left-color: #28a745; background-color: #f0fff0;">
-                <h3>✅ Синопсис успешно сгенерирован!</h3>
-                <p>Файл отправлен на скачивание. Проверьте папку "Загрузки".</p>
-            </div>
-        `;
-        
-    } catch (err) {
-        hideLoading();
+        console.error('Ошибка генерации синопсиса:', err);
         showError(`Ошибка генерации синопсиса: ${err.message}`);
     }
-});
-
-// ============= СКАЧИВАНИЕ СИНОПСИСА =============
-function downloadSynopsis(result) {
-    const format = document.getElementById('outputFormat').value;
-    
-    // Отправляем ВСЕ данные из анализа для генерации полного синопсиса
-    const data = {
-        inn: result.inn,
-        dosage_form: result.dosage_form,
-        dosage: result.dosage,
-        administration_mode: result.administration_mode,
-        literature: result.literature,
-        design_recommendation: result.design_recommendation,
-        sample_size: result.sample_size,
-        regulatory_check: result.regulatory_check,
-        pk_parameters: result.pk_parameters || {},
-        output_format: format
-    };
-    
-    showLoading();
-    
-    fetch(`${API_BASE_URL}/generate-full-synopsis`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data)
-    })
-    .then(response => {
-        if (!response.ok) {
-            // Пытаемся получить JSON ошибку
-            return response.json().then(errData => {
-                throw new Error(errData.error || `HTTP error! status: ${response.status}`);
-            }).catch(() => {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            });
-        }
-        return response.blob();
-    })
-    .then(blob => {
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `synopsis_${data.inn}_${new Date().getTime()}.${format}`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-        hideLoading();
-        
-        // Показываем успешное сообщение
-        const downloadSection = document.getElementById('downloadSection');
-        if (downloadSection) {
-            downloadSection.innerHTML = `
-                <div class="result-card" style="border-left-color: #28a745; background-color: #f0fff0;">
-                    <h3>✅ Синопсис успешно сгенерирован!</h3>
-                    <p>Файл отправлен на скачивание. Проверьте папку "Загрузки".</p>
-                </div>
-            `;
-        }
-    })
-    .catch(err => {
-        hideLoading();
-        console.error('Ошибка скачивания:', err);
-        showError(`Ошибка скачивания: ${err.message}`);
-    });
 }
 
-// ============= ПРОВЕРКА API ПРИ ЗАГРУЗКЕ =============
-window.addEventListener('load', async () => {
+// ============================================================
+// ОТОБРАЖЕНИЕ РЕЗУЛЬТАТОВ ПОИСКА
+// ============================================================
+function displaySearchResults(result) {
+    // CVintra
+    const cvintraResults = document.getElementById('cvintraResults');
+    if (cvintraResults) {
+        const cvintra = result.cvintra || result.design_recommendation?.cvintra || 25;  // Fallback to 25%
+        const source = result.cvintra_source || result.design_recommendation?.cvintra_source || 'default';
+        const confidence = (result.confidence || result.cvintra_confidence || 0);
+        
+        // Format source label
+        let sourceLabel = '';
+        if (source === 'user_input') sourceLabel = ' (пользователь)';
+        else if (source === 'pubmed') sourceLabel = ' (PubMed)';
+        else if (source === 'database') sourceLabel = ' (база данных)';
+        else if (source === 'default') sourceLabel = ' (стандартное значение)';
+        
+        cvintraResults.innerHTML = `
+            <div class="stat-box">
+                <div class="stat-value">${cvintra.toFixed(1)}%</div>
+                <div class="stat-label">CVintra${sourceLabel}</div>
+                <div class="stat-confidence">
+                    Уверенность: ${(confidence * 100).toFixed(1)}%
+                </div>
+            </div>
+        `;
+    }
+
+    // PK параметры
+    displayPKResults(result);
+
+    // Источники
+    displaySourceResults(result);
+
+    // Статистика
+    displayStatsResults(result);
+}
+
+function displayPKResults(result) {
+    const pkResults = document.getElementById('pkResults');
+    if (!pkResults) return;
+
+    if (!result.articles || result.articles.length === 0) {
+        pkResults.innerHTML = '<p class="placeholder-text">Статьи не найдены</p>';
+        return;
+    }
+
+    let html = '<div style="max-height: 400px; overflow-y: auto;">';
+    result.articles.slice(0, 5).forEach(article => {
+        html += `
+            <div style="padding: 0.75rem; border-bottom: 1px solid var(--color-accent); margin-bottom: 0.75rem;">
+                <h5 style="margin: 0 0 0.5rem 0; font-weight: 600; color: var(--color-primary);">
+                    ${article.title || 'Без названия'}
+                </h5>
+                <p style="margin: 0.25rem 0; font-size: 0.9rem; color: var(--color-accent);">
+                    ${article.authors?.join(', ') || 'Автор неизвестен'} (${article.year || 'N/A'})
+                </p>
+                <a href="https://pubmed.ncbi.nlm.nih.gov/${article.pmid}/" target="_blank" 
+                   style="color: var(--color-secondary); font-size: 0.85rem; text-decoration: none;">
+                    Открыть в PubMed
+                </a>
+            </div>
+        `;
+    });
+    html += '</div>';
+
+    pkResults.innerHTML = html;
+}
+
+function displaySourceResults(result) {
+    const sourceResults = document.getElementById('sourceResults');
+    if (!sourceResults) return;
+
+    let html = '<div style="space-y: 1rem;">';
+
+    if (result.sources) {
+        result.sources.forEach(source => {
+            const level = source.reliability >= 0.8 ? 'Высокая' :
+                          source.reliability >= 0.6 ? 'Средняя' : 'Низкая';
+            
+            html += `
+                <div style="padding: 1rem; margin-bottom: 0.75rem; background: var(--color-light); border-radius: 8px;">
+                    <p style="margin: 0 0 0.5rem 0;">
+                        <strong>${source.name}</strong>
+                    </p>
+                    <p style="margin: 0.25rem 0; font-size: 0.9rem; color: var(--color-accent);">
+                        Надежность: <strong>${level} (${(source.reliability * 100).toFixed(0)}%)</strong>
+                    </p>
+                    ${source.url ? `<a href="${source.url}" target="_blank" style="color: var(--color-secondary); font-size: 0.85rem;">Перейти</a>` : ''}
+                </div>
+            `;
+        });
+    }
+
+    html += '</div>';
+    sourceResults.innerHTML = html;
+}
+
+function displayStatsResults(result) {
+    const statsResults = document.getElementById('statsResults');
+    if (!statsResults) return;
+
+    const articleCount = result.articles?.length || 0;
+    const avgConfidence = result.confidence ? (result.confidence * 100).toFixed(1) : 'N/A';
+
+    statsResults.innerHTML = `
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+            <div style="text-align: center; padding: 1rem; background: var(--color-light); border-radius: 8px;">
+                <div style="font-size: 1.8rem; font-weight: 700; color: var(--color-primary);">${articleCount}</div>
+                <div style="font-size: 0.9rem; color: var(--color-accent);">Статей найдено</div>
+            </div>
+            <div style="text-align: center; padding: 1rem; background: var(--color-light); border-radius: 8px;">
+                <div style="font-size: 1.8rem; font-weight: 700; color: var(--color-secondary);">${avgConfidence}%</div>
+                <div style="font-size: 0.9rem; color: var(--color-accent);">Средняя уверенность</div>
+            </div>
+        </div>
+    `;
+}
+
+// ============================================================
+// ОТОБРАЖЕНИЕ ПОЛНЫХ РЕЗУЛЬТАТОВ АНАЛИЗА
+// ============================================================
+function displayCompleteResults(result) {
+    // Используем те же функции отображения + добавим дизайн исследования
+    displaySearchResults(result);
+
+    // Дизайн исследования
+    const designResults = document.getElementById('designResults');
+    if (designResults) {
+        if (result.design_recommendation) {
+            designResults.innerHTML = `
+                <h4 style="color: var(--color-primary); margin: 0 0 1rem 0;">
+                    ${result.design_recommendation.design || result.design_recommendation.recommended_design || 'N/A'}
+                </h4>
+                <p style="color: var(--color-accent); line-height: 1.6;">
+                    ${result.design_recommendation.rationale || 'N/A'}
+                </p>
+            `;
+        } else {
+            designResults.innerHTML = '<p class="placeholder-text">Данные не доступны</p>';
+        }
+    }
+
+    // Размер выборки
+    const sampleSizeResults = document.getElementById('sampleSizeResults');
+    if (sampleSizeResults) {
+        if (result.sample_size) {
+            const ss = result.sample_size;
+            sampleSizeResults.innerHTML = `
+                <div style="background: linear-gradient(135deg, var(--color-light), var(--color-light)); padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+                    <div style="font-size: 0.9rem; color: var(--color-accent); margin-bottom: 0.5rem;">Рекомендуемый размер:</div>
+                    <div style="font-size: 2rem; font-weight: 700; color: var(--color-primary);">
+                        ${ss.final_sample_size || ss.base_sample_size || 'N/A'} участников
+                    </div>
+                </div>
+                <div style="font-size: 0.9rem; color: var(--color-accent);">
+                    <p><strong>Дизайн:</strong> ${ss.design || 'N/A'}</p>
+                    <p><strong>CVintra:</strong> ${ss.cvintra || 'N/A'}%</p>
+                    <p><strong>Expected Drop-out:</strong> ${ss.dropout_rate || 'N/A'}%</p>
+                </div>
+            `;
+        } else {
+            sampleSizeResults.innerHTML = '<p class="placeholder-text">Данные не доступны</p>';
+        }
+    }
+}
+
+// ============================================================
+// ПРОВЕРКА ЗДОРОВЬЯ API
+// ============================================================
+async function checkAPIHealth() {
     try {
         const response = await fetch(`${API_BASE_URL}/health`);
         const data = await response.json();
-        console.log('✅ API Status:', data);
+        console.log('API healthy:', data);
     } catch (err) {
-        console.error('❌ API недоступен:', err);
-        showError('Не удается подключиться к серверу. Убедитесь, что backend запущен на http://127.0.0.1:5000');
+        console.warn('API unavailable:', err.message);
+        // Не показываем ошибку при загрузке, только в консоль
     }
-});
+}
+
+// ============================================================
+// СТИЛИ ДЛЯ STAT BOXES
+// ============================================================
+const stylesheet = document.createElement('style');
+stylesheet.textContent = `
+    .stat-box {
+        text-align: center;
+        padding: 1.5rem;
+        background: linear-gradient(135deg, var(--color-light) 0%, var(--color-light) 100%);
+        border-radius: 12px;
+        border: 2px solid var(--color-primary);
+    }
+
+    .stat-value {
+        font-size: 2.5rem;
+        font-weight: 800;
+        color: var(--color-primary);
+        margin-bottom: 0.5rem;
+    }
+
+    .stat-label {
+        font-size: 0.9rem;
+        color: var(--color-accent);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.75rem;
+    }
+
+    .stat-confidence {
+        font-size: 0.85rem;
+        color: var(--color-secondary);
+        font-weight: 600;
+    }
+`;
+document.head.appendChild(stylesheet);
+
+// Экспортируем функции для использования в HTML
+window.smoothScroll = smoothScroll;
+window.closeError = closeError;

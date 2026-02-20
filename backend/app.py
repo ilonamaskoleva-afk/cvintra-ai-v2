@@ -47,6 +47,45 @@ def health():
     """Проверка здоровья API"""
     return jsonify({"status": "OK", "message": "API is running", "timestamp": datetime.now().isoformat()}), 200
 
+# ============= WOW FEATURE: INTELLIGENT DRUG ANALYZER =============
+@app.route('/api/analyze-smart', methods=['POST'])
+def analyze_smart():
+    """
+    THE WOW-FACTOR ENDPOINT!
+    
+    Uses:
+    ✓ Live Data Mode (Local DB → PubMed → DrugBank fallback chain)
+    ✓ Hugging Face QA (Question-Answering via transformers)
+    ✓ Semantic Search RAG (Vector embeddings for better retrieval)
+    ✓ Status Tracking (Real-time processing steps for UI)
+    ✓ Comprehensive Logging (Production-ready)
+    """
+    data = request.json
+    inn = data.get('inn', '')
+    questions = data.get('questions', [])
+    
+    if not inn:
+        return jsonify({"error": "INN is required"}), 400
+    
+    try:
+        logger.info(f"🎯 Smart analysis initiated for: {inn}")
+        
+        from utils.intelligent_drug_lookup import IntelligentDrugAnalyzer
+        
+        analyzer = IntelligentDrugAnalyzer()
+        result = analyzer.analyze_drug(inn, questions=questions)
+        
+        logger.info(f"✅ Smart analysis complete")
+        return jsonify(result), 200
+        
+    except Exception as e:
+        logger.error(f"Smart analysis error: {e}", exc_info=True)
+        return jsonify({
+            "error": str(e),
+            "inn": inn,
+            "status": "error"
+        }), 500
+
 # ============= BASIC ENDPOINTS (без RAG) =============
 @app.route('/api/sample-size', methods=['POST'])
 def calculate_sample_size():
@@ -322,6 +361,33 @@ def full_analysis():
             "final_sample_size": design_rec.get("final_sample_size"),
             "calculation_steps": design_rec.get("steps", [])
         }
+        
+        # Добавляем top-level поля для совместимости с фронтенд-ом
+        # CVintra (для displaySearchResults)
+        results["cvintra"] = cvintra
+        results["cvintra_source"] = cvintra_source
+        
+        # Articles (из PubMed - для displayPKResults)
+        pubmed_articles = results.get("literature", {}).get("pubmed", {}).get("articles", [])
+        if pubmed_articles:
+            results["articles"] = pubmed_articles
+        else:
+            results["articles"] = []
+        
+        # Confidence (из PubMed CVintra extraction)
+        pubmed_result = results.get("literature", {}).get("pubmed", {})
+        if pubmed_result and isinstance(pubmed_result, dict):
+            confidence = pubmed_result.get("cvintra_confidence", 0.0)
+            results["confidence"] = confidence
+        else:
+            results["confidence"] = 0.0
+        
+        # Sources (из PubMed)
+        pubmed_sources = pubmed_result.get("sources", []) if isinstance(pubmed_result, dict) else []
+        if pubmed_sources:
+            results["sources"] = pubmed_sources
+        else:
+            results["sources"] = []
         
         # Регуляторная проверка
         results["regulatory_check"] = {

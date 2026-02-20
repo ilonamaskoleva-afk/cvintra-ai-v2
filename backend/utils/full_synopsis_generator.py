@@ -4,6 +4,106 @@
 """
 from datetime import datetime
 from typing import Dict, Any
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _auto_fetch_pk_and_cvintra(inn: str) -> Dict[str, Any]:
+    """
+    Try to automatically fetch PK parameters and CVintra using available scrapers
+    and LLM extractor. Returns a dict compatible with `pk_parameters`.
+    This function is best-effort and will not raise on missing dependencies.
+    """
+    pk_result = {
+        'cmax': {},
+        'auc': {},
+        'tmax': {},
+        't_half': {},
+        'cvintra': {'value': None, 'unit': '%'},
+        'sources': []
+    }
+
+    try:
+        # Import scrapers from backend package
+        from scrapers.pubmed_scraper import PubMedScraper
+        from scrapers.drugbank_scraper import DrugBankScraper
+    except Exception as e:
+        logger.warning(f"Auto-fetch: scrapers not available: {e}")
+        return pk_result
+
+    try:
+        pubmed = PubMedScraper()
+        pubmed_res = pubmed.get_drug_pk_data(inn)
+
+        # Merge pk parameters if available
+        pkp = pubmed_res.get('pk_parameters') or {}
+        for key in ('cmax', 'auc', 'tmax', 't_half', 'cvintra'):
+            if pkp.get(key):
+                pk_result[key] = pkp.get(key)
+
+        # Collect article abstracts for LLM context
+        abstracts = []
+        for a in pubmed_res.get('articles', [])[:10]:
+            # try to fetch full cached article if available
+            try:
+                art = pubmed.cache.get_article(a.get('pmid')) if getattr(pubmed, 'cache', None) else None
+                if art and art.get('abstract'):
+                    abstracts.append(art.get('abstract'))
+            except Exception:
+                continue
+
+        # Try DrugBank for supplementary info
+        try:
+            db = DrugBankScraper()
+            db_res = db.get_drug_info(inn)
+            # DrugBank may supply PK fields under various keys
+            if isinstance(db_res, dict):
+                for key_map in [('cmax','cmax'), ('auc','auc'), ('tmax','tmax'), ('t_half','t_half')]:
+                    k_src = key_map[1]
+                    k_dst = key_map[0]
+                    if db_res.get(k_src):
+                        pk_result[k_dst] = db_res.get(k_src)
+                # append textual summaries
+                if db_res.get('summary'):
+                    abstracts.append(db_res.get('summary'))
+        except Exception as e:
+            logger.debug(f"DrugBank fetch failed: {e}")
+
+        # If we have abstracts, try LLM-based QA extraction (best-effort)
+        if abstracts:
+            context = "\n\n".join(abstracts)
+            try:
+                from models.llm_handler import get_llm
+                llm = get_llm()
+                qa_prompt = (
+                    f"Extract PK parameters for {inn} from the following context."
+                    " Return JSON: {\"cvintra\":float|null, \"cmax\":{\"value\":float,\"unit\":str}|null,"
+                    " \"auc\":{\"value\":float,\"unit\":str}|null, \"tmax\":float|null, \"t_half\":float|null }\n\nContext:\n" + context
+                )
+                resp = llm.generate_json(qa_prompt)
+                if isinstance(resp, dict):
+                    if resp.get('cvintra') is not None:
+                        pk_result['cvintra'] = {'value': float(resp.get('cvintra')), 'unit': '%'}
+                    if isinstance(resp.get('cmax'), dict):
+                        pk_result['cmax'] = resp.get('cmax')
+                    if isinstance(resp.get('auc'), dict):
+                        pk_result['auc'] = resp.get('auc')
+                    if resp.get('tmax') is not None:
+                        pk_result['tmax'] = {'value': float(resp.get('tmax')), 'unit': 'h'}
+                    if resp.get('t_half') is not None:
+                        pk_result['t_half'] = {'value': float(resp.get('t_half')), 'unit': 'h'}
+            except Exception as e:
+                logger.debug(f"LLM QA extraction not available or failed: {e}")
+
+        # Attach sources
+        pk_result['sources'] = pubmed_res.get('articles', [])[:10]
+
+    except Exception as e:
+        logger.warning(f"Auto-fetch pipeline error: {e}")
+
+    return pk_result
+
 
 
 def generate_full_synopsis_data(analysis_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -25,6 +125,23 @@ def generate_full_synopsis_data(analysis_data: Dict[str, Any]) -> Dict[str, Any]
     sample_size = analysis_data.get('sample_size', {})
     pk_params = analysis_data.get('pk_parameters', {})
     literature = analysis_data.get('literature', {})
+    
+    # Attempt auto-fetch if pk_parameters is empty or incomplete
+    if not pk_params or not any([pk_params.get('cmax'), pk_params.get('auc'), pk_params.get('cvintra')]):
+        logger.info(f"Auto-fetching PK parameters for {inn}...")
+        try:
+            auto_pk = _auto_fetch_pk_and_cvintra(inn)
+            # Merge auto-fetched data with existing (auto takes precedence for empty fields)
+            for key in ('cmax', 'auc', 'tmax', 't_half', 'cvintra'):
+                if auto_pk.get(key):
+                    if not pk_params.get(key):
+                        pk_params[key] = auto_pk.get(key)
+            # Merge sources
+            if auto_pk.get('sources') and not pk_params.get('sources'):
+                pk_params['sources'] = auto_pk.get('sources')
+            logger.info(f"Auto-fetch complete for {inn}")
+        except Exception as e:
+            logger.warning(f"Auto-fetch failed (falling back to manual): {e}")
     
     cvintra = sample_size.get('cvintra', 25)
     recommended_design = design_rec.get('recommended_design', '2×2 Cross-over')
